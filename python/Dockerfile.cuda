@@ -1,0 +1,41 @@
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        ffmpeg \
+        libsndfile1 \
+        sox \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+ENV UV_PYTHON=python3.12
+
+COPY pyproject.toml uv.lock ./
+
+# Install all dependencies (CPU torch from lock file).
+RUN uv sync --frozen --no-dev
+
+# Replace CPU torch with CUDA 12.8 variant.
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+RUN uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+COPY main.py .
+
+ENV QWEN_TTS_DEVICE=cuda:0 \
+    QWEN_TTS_DTYPE=bfloat16 \
+    QWEN_TTS_ATTN="" \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+EXPOSE 8000
+
+CMD ["uv", "run", "python", "main.py"]

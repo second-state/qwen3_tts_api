@@ -1,0 +1,29 @@
+services:
+  cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice:/model
+    profiles:
+      - cpu
+
+  cuda:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice:/model
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - cuda
