@@ -30,66 +30,7 @@ huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --local-dir ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice
 ```
 
-## Running from source
-
-### Install dependencies
-
-```bash
-uv sync
-```
-
-### Start the server
-
-**GPU (CUDA):**
-
-```bash
-MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
-  uv run python main.py
-```
-
-**CPU:**
-
-```bash
-MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-  QWEN_TTS_DEVICE=cpu \
-  QWEN_TTS_DTYPE=float32 \
-  QWEN_TTS_ATTN="" \
-  uv run python main.py
-```
-
-The server listens on `http://0.0.0.0:8000` by default.
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MODEL_PATH` | `/model` | Path to the model directory (local path or HuggingFace model ID) |
-| `QWEN_TTS_DEVICE` | `cuda:0` | Torch device (`cuda:0`, `cuda:1`, `cpu`) |
-| `QWEN_TTS_DTYPE` | `bfloat16` | Model precision (`bfloat16`, `float16`, `float32`) |
-| `QWEN_TTS_ATTN` | `flash_attention_2` | Attention implementation (set to empty string `""` to disable) |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `PORT` | `8000` | Server port |
-
-## Running with Docker
-
-Two Dockerfiles are provided:
-
-- `Dockerfile` -- CPU, multi-arch (ARM64 and x86_64)
-- `Dockerfile.cuda` -- NVIDIA GPU (requires CUDA 12.8+ driver)
-
-### Using docker compose
-
-```bash
-# CPU
-docker compose --profile cpu up --build
-
-# CUDA GPU
-docker compose --profile cuda up --build
-```
-
-The compose file mounts the model directory from `./models/` into `/model` inside the container. Adjust the volume path in `docker-compose.yml` if your models are stored elsewhere.
-
-### Using docker directly
+## Quickstart with Docker
 
 **CPU:**
 
@@ -188,3 +129,45 @@ The `voice` field accepts OpenAI voice names (mapped to Qwen3-TTS speakers) or Q
 | `mp3` | `audio/mpeg` | Yes |
 | `opus` | `audio/opus` | Yes |
 | `aac` | `audio/aac` | Yes |
+
+
+## Running from source
+
+### Install dependencies
+
+```bash
+uv sync
+```
+
+### Start the server
+
+**GPU (CUDA):**
+
+```bash
+MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  uv run python main.py
+```
+
+**CPU:**
+
+```bash
+MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  QWEN_TTS_DEVICE=cpu \
+  QWEN_TTS_DTYPE=float32 \
+  QWEN_TTS_ATTN="" \
+  uv run python main.py
+```
+
+The server listens on `http://0.0.0.0:8000` by default.
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODEL_PATH` | `/model` | Path to the model directory (local path or HuggingFace model ID) |
+| `QWEN_TTS_DEVICE` | `cuda:0` | Torch device (`cuda:0`, `cuda:1`, `cpu`) |
+| `QWEN_TTS_DTYPE` | `bfloat16` | Model precision (`bfloat16`, `float16`, `float32`) |
+| `QWEN_TTS_ATTN` | `flash_attention_2` | Attention implementation (set to empty string `""` to disable) |
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8000` | Server port |
+
