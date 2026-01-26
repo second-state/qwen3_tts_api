@@ -1,7 +1,7 @@
 [project]
 name = "qwen-tts-api"
 version = "0.1.0"
-description = "Add your description here"
+description = "Python package exposing qwen-tts text-to-speech functionality as an API."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
