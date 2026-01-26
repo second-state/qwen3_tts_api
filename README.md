@@ -18,9 +18,9 @@ The **Rust** implementation will be built on the [qwen3_tts](https://crates.io/c
 The purpose of these API servers is to provide self-hosted, free backend TTS services for projects such as:
 
 - [Clawdbot](https://github.com/clawdbot/clawdbot) -- AI agent
-- [EchoKit](https://github.com/second-state/echokit_server) -- AI device
-- [Olares](https://github.com/beclab/Olares) -- OS
-- [GaiaNet](https://github.com/GaiaNet-AI/gaianet-node) -- AI network
+- [EchoKit](https://github.com/second-state/echokit_server) -- Voice AI device
+- [Olares](https://github.com/beclab/Olares) -- Personal AI cloud OS
+- [GaiaNet](https://github.com/GaiaNet-AI/gaianet-node) -- Incentivized AI agent network and marketplace
 
 Any application that speaks the OpenAI TTS API can swap in this server as a drop-in replacement.
 

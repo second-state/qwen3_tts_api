@@ -42,8 +42,10 @@ This document contains critical information about working with this codebase. Fo
   ```bash
   git commit --trailer "GitHub-Issue:#<number>"
   ```
-- NEVER ever mention a `co-authored-by` or similar aspects. In particular, never
-  mention the tool used to create the commit message or PR.
+- Add a `Co-Authored-By` trailer when Claude contributes to a commit:
+  ```bash
+  git commit --trailer "Co-Authored-By:Claude <noreply@anthropic.com>"
+  ```
 
 ## Development Philosophy
 
