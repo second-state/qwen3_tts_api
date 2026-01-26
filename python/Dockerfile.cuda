@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -26,11 +26,14 @@ ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
 RUN uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 
+# Install flash attention for reduced GPU memory usage.
+RUN uv pip install flash-attn --no-build-isolation
+
 COPY main.py .
 
 ENV QWEN_TTS_DEVICE=cuda:0 \
     QWEN_TTS_DTYPE=bfloat16 \
-    QWEN_TTS_ATTN="" \
+    QWEN_TTS_ATTN=flash_attention_2 \
     HOST=0.0.0.0 \
     PORT=8000 \
     NVIDIA_VISIBLE_DEVICES=all \

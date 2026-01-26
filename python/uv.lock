@@ -1528,7 +1528,10 @@ name = "qwen-tts-api"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "fastapi" },
+    { name = "pydantic" },
     { name = "qwen-tts" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -1537,7 +1540,12 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "qwen-tts", specifier = ">=0.0.5" }]
+requires-dist = [
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "qwen-tts", specifier = ">=0.0.5" },
+    { name = "uvicorn" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.14.14" }]

@@ -139,6 +139,12 @@ The `voice` field accepts OpenAI voice names (mapped to Qwen3-TTS speakers) or Q
 uv sync
 ```
 
+To enable flash attention on a CUDA GPU (optional, reduces GPU memory usage):
+
+```bash
+pip install -U flash-attn --no-build-isolation
+```
+
 ### Start the server
 
 **GPU (CUDA):**
