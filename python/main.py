@@ -220,6 +220,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     dtype = getattr(torch, dtype_name, torch.bfloat16)
     attn_impl = os.environ.get("QWEN_TTS_ATTN", "flash_attention_2")
 
+    if attn_impl == "flash_attention_2":
+        try:
+            import flash_attn  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "flash-attn is not installed, disabling flash_attention_2. "
+                "Install with: pip install -U flash-attn --no-build-isolation"
+            )
+            attn_impl = ""
+
     logger.info(
         "Loading model %s on %s (%s, attn=%s)",
         model_path,
