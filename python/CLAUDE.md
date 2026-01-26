@@ -38,9 +38,9 @@ This document contains critical information about working with this codebase. Fo
   ```
   Where `<name>` is the name of the user.
 
-- For commits related to a Github issue, add
+- For commits related to a GitHub issue, add
   ```bash
-  git commit --trailer "Github-Issue:#<number>"
+  git commit --trailer "GitHub-Issue:#<number>"
   ```
 - NEVER ever mention a `co-authored-by` or similar aspects. In particular, never
   mention the tool used to create the commit message or PR.
