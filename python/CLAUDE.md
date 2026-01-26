@@ -71,7 +71,7 @@ This document contains critical information about working with this codebase. Fo
 - **Build Test Environments**: Create testing environments for components that are difficult to validate directly
 - **Functional Code**: Use functional and stateless approaches where they improve clarity
 - **Clean logic**: Keep core logic clean and push implementation details to the edges
-- **File Organsiation**: Balance file organization with simplicity - use an appropriate number of files for the project scale
+- **File Organization**: Balance file organization with simplicity - use an appropriate number of files for the project scale
 
 ## Code Formatting
 
