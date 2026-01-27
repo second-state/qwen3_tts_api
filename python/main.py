@@ -70,11 +70,13 @@ class SpeechRequest(BaseModel):
 
     model: str
     input: str = Field(..., max_length=4096)
-    voice: str
+    voice: str = "alloy"
     response_format: ResponseFormat = ResponseFormat.mp3
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
     language: str = "Auto"
     instructions: str | None = None
+    audio_sample: str | None = None
+    audio_sample_text: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +215,19 @@ _inference_lock = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Load the Qwen3-TTS model on startup."""
-    model_path = os.environ.get("MODEL_PATH", "/model")
+    """Load the Qwen3-TTS models on startup."""
+    model_path = os.environ.get("CUSTOMVOICE_MODEL_PATH", "")
+    base_model_path = os.environ.get("BASE_MODEL_PATH", "")
     device = os.environ.get("QWEN_TTS_DEVICE", "cuda:0")
     dtype_name = os.environ.get("QWEN_TTS_DTYPE", "bfloat16")
     dtype = getattr(torch, dtype_name, torch.bfloat16)
     attn_impl = os.environ.get("QWEN_TTS_ATTN", "flash_attention_2")
+
+    if not model_path and not base_model_path:
+        raise RuntimeError(
+            "At least one of CUSTOMVOICE_MODEL_PATH or "
+            "BASE_MODEL_PATH must be set."
+        )
 
     if attn_impl == "flash_attention_2":
         try:
@@ -230,14 +239,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
             attn_impl = ""
 
-    logger.info(
-        "Loading model %s on %s (%s, attn=%s)",
-        model_path,
-        device,
-        dtype_name,
-        attn_impl,
-    )
-
     kwargs: dict[str, object] = {
         "device_map": device,
         "dtype": dtype,
@@ -245,8 +246,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if attn_impl:
         kwargs["attn_implementation"] = attn_impl
 
-    app.state.model = Qwen3TTSModel.from_pretrained(model_path, **kwargs)
-    logger.info("Model loaded successfully")
+    app.state.model = None
+    if model_path:
+        logger.info(
+            "Loading custom-voice model %s on %s (%s, attn=%s)",
+            model_path,
+            device,
+            dtype_name,
+            attn_impl,
+        )
+        app.state.model = Qwen3TTSModel.from_pretrained(
+            model_path, **kwargs
+        )
+        logger.info("Custom-voice model loaded successfully")
+
+    app.state.base_model = None
+    if base_model_path:
+        logger.info(
+            "Loading base model %s on %s (%s, attn=%s)",
+            base_model_path,
+            device,
+            dtype_name,
+            attn_impl,
+        )
+        app.state.base_model = Qwen3TTSModel.from_pretrained(
+            base_model_path, **kwargs
+        )
+        logger.info("Base model loaded successfully")
+
     yield
 
 
@@ -260,17 +287,45 @@ app = FastAPI(
 @app.post("/v1/audio/speech")
 async def create_speech(request: SpeechRequest) -> Response:
     """Generate audio from text (OpenAI-compatible endpoint)."""
-    model: Qwen3TTSModel = app.state.model
-    speaker = resolve_voice(request.voice)
-    instruct = request.instructions or ""
-
-    with _inference_lock:
-        wavs, sr = model.generate_custom_voice(
-            text=request.input,
-            language=request.language,
-            speaker=speaker,
-            instruct=instruct,
-        )
+    if request.audio_sample:
+        base_model: Qwen3TTSModel | None = app.state.base_model
+        if base_model is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "audio_sample requires a base model. "
+                    "Set BASE_MODEL_PATH to enable voice cloning."
+                ),
+            )
+        use_icl = request.audio_sample_text is not None
+        with _inference_lock:
+            wavs, sr = base_model.generate_voice_clone(
+                text=request.input,
+                language=request.language,
+                ref_audio=request.audio_sample,
+                ref_text=request.audio_sample_text,
+                x_vector_only_mode=not use_icl,
+            )
+    else:
+        model: Qwen3TTSModel | None = app.state.model
+        if model is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Custom-voice model is not loaded. "
+                    "Set CUSTOMVOICE_MODEL_PATH to enable speaker voices, "
+                    "or provide audio_sample to use voice cloning."
+                ),
+            )
+        speaker = resolve_voice(request.voice)
+        instruct = request.instructions or ""
+        with _inference_lock:
+            wavs, sr = model.generate_custom_voice(
+                text=request.input,
+                language=request.language,
+                speaker=speaker,
+                instruct=instruct,
+            )
 
     audio: np.ndarray = wavs[0]
     audio = apply_speed(audio, request.speed)

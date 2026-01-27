@@ -1,0 +1,267 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      QWEN_TTS_DEVICE: cpu
+      QWEN_TTS_DTYPE: float32
+      QWEN_TTS_ATTN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Cache models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/Qwen3-TTS-12Hz-0.6B-CustomVoice
+            models/Qwen3-TTS-12Hz-0.6B-Base
+          key: qwen-tts-models-0.6B
+
+      - name: Download models
+        if: steps.cache-models.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          uv run huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+            --local-dir ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice
+          uv run huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+            --local-dir ./models/Qwen3-TTS-12Hz-0.6B-Base
+
+      - name: Create output directory
+        run: mkdir -p artifacts
+
+      # ==================================================================
+      # Phase 1: Both models loaded
+      # ==================================================================
+
+      - name: "Phase 1: Start server (both models)"
+        run: |
+          CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+          uv run python main.py &
+          echo $! > /tmp/server.pid
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: "Phase 1: Generate English speech with Vivian"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "Hello, this is Vivian speaking English for the integration test.",
+              "voice": "Vivian",
+              "language": "English",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase1_vivian_english.wav
+          echo "Generated phase1_vivian_english.wav ($(stat --format=%s artifacts/phase1_vivian_english.wav) bytes)"
+
+      - name: "Phase 1: Generate Chinese speech with Vivian"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "你好，这是Vivian的中文语音合成测试。",
+              "voice": "Vivian",
+              "language": "Chinese",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase1_vivian_chinese.wav
+          echo "Generated phase1_vivian_chinese.wav ($(stat --format=%s artifacts/phase1_vivian_chinese.wav) bytes)"
+
+      - name: "Phase 1: Clone English voice from Vivian sample"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "This sentence clones the Vivian English voice using audio_sample.",
+              "audio_sample": "'"$(pwd)"'/artifacts/phase1_vivian_english.wav",
+              "audio_sample_text": "Hello, this is Vivian speaking English for the integration test.",
+              "language": "English",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase1_clone_english.wav
+          echo "Generated phase1_clone_english.wav ($(stat --format=%s artifacts/phase1_clone_english.wav) bytes)"
+
+      - name: "Phase 1: Clone Chinese voice from Vivian sample"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "这段语音使用了Vivian的中文音频样本进行声音克隆。",
+              "audio_sample": "'"$(pwd)"'/artifacts/phase1_vivian_chinese.wav",
+              "audio_sample_text": "你好，这是Vivian的中文语音合成测试。",
+              "language": "Chinese",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase1_clone_chinese.wav
+          echo "Generated phase1_clone_chinese.wav ($(stat --format=%s artifacts/phase1_clone_chinese.wav) bytes)"
+
+      - name: "Phase 1: Stop server"
+        run: kill "$(cat /tmp/server.pid)" && sleep 2
+
+      # ==================================================================
+      # Phase 2: CustomVoice model only
+      # ==================================================================
+
+      - name: "Phase 2: Start server (CustomVoice only)"
+        run: |
+          CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          uv run python main.py &
+          echo $! > /tmp/server.pid
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: "Phase 2: Generate English speech with Ryan"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "Hello, this is Ryan speaking English with only the CustomVoice model loaded.",
+              "voice": "Ryan",
+              "language": "English",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase2_ryan_english.wav
+          echo "Generated phase2_ryan_english.wav ($(stat --format=%s artifacts/phase2_ryan_english.wav) bytes)"
+
+      - name: "Phase 2: Generate Chinese speech with Ryan"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "你好，这是Ryan的中文语音，仅加载了CustomVoice模型。",
+              "voice": "Ryan",
+              "language": "Chinese",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase2_ryan_chinese.wav
+          echo "Generated phase2_ryan_chinese.wav ($(stat --format=%s artifacts/phase2_ryan_chinese.wav) bytes)"
+
+      - name: "Phase 2: Verify audio_sample returns error"
+        run: |
+          status=$(curl -s -o /tmp/response.json -w "%{http_code}" --max-time 30 \
+            -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "This should fail.",
+              "audio_sample": "'"$(pwd)"'/artifacts/phase1_vivian_english.wav",
+              "language": "English",
+              "response_format": "wav"
+            }')
+          echo "HTTP status: $status"
+          cat /tmp/response.json
+          echo
+          if [ "$status" -ne 400 ]; then
+            echo "FAIL: Expected HTTP 400 but got $status"
+            exit 1
+          fi
+          echo "PASS: audio_sample correctly rejected without Base model"
+
+      - name: "Phase 2: Stop server"
+        run: kill "$(cat /tmp/server.pid)" && sleep 2
+
+      # ==================================================================
+      # Phase 3: Base model only
+      # ==================================================================
+
+      - name: "Phase 3: Start server (Base only)"
+        run: |
+          BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+          uv run python main.py &
+          echo $! > /tmp/server.pid
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: "Phase 3: Clone voice from Ryan English sample"
+        run: |
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "This clones Ryan voice with only the Base model loaded.",
+              "audio_sample": "'"$(pwd)"'/artifacts/phase2_ryan_english.wav",
+              "audio_sample_text": "Hello, this is Ryan speaking English with only the CustomVoice model loaded.",
+              "language": "English",
+              "response_format": "wav"
+            }' \
+            --output artifacts/phase3_clone_ryan.wav
+          echo "Generated phase3_clone_ryan.wav ($(stat --format=%s artifacts/phase3_clone_ryan.wav) bytes)"
+
+      - name: "Phase 3: Verify voice name returns error"
+        run: |
+          status=$(curl -s -o /tmp/response.json -w "%{http_code}" --max-time 30 \
+            -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "This should fail.",
+              "voice": "Ryan",
+              "language": "English",
+              "response_format": "wav"
+            }')
+          echo "HTTP status: $status"
+          cat /tmp/response.json
+          echo
+          if [ "$status" -ne 400 ]; then
+            echo "FAIL: Expected HTTP 400 but got $status"
+            exit 1
+          fi
+          echo "PASS: voice name correctly rejected without CustomVoice model"
+
+      - name: "Phase 3: Stop server"
+        run: kill "$(cat /tmp/server.pid)" && sleep 2
+
+      # ==================================================================
+      # Upload artifacts
+      # ==================================================================
+
+      - name: Upload audio artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-audio
+          path: artifacts/*.wav
