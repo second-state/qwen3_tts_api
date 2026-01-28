@@ -95,33 +95,25 @@ jobs:
 
       - name: "Phase 1: Clone English voice from Vivian sample"
         run: |
-          base64 -w0 artifacts/phase1_vivian_english.wav | jq -Rs '{
-            model: "qwen3-tts",
-            input: "This sentence clones the Vivian English voice using audio_sample.",
-            audio_sample: .,
-            audio_sample_text: "Hello, this is Vivian speaking English for the integration test.",
-            language: "English",
-            response_format: "wav"
-          }' > /tmp/payload.json
           curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
-            -H "Content-Type: application/json" \
-            -d @/tmp/payload.json \
+            -F model=qwen3-tts \
+            -F "input=This sentence clones the Vivian English voice using audio_sample." \
+            -F audio_sample=@artifacts/phase1_vivian_english.wav \
+            -F "audio_sample_text=Hello, this is Vivian speaking English for the integration test." \
+            -F language=English \
+            -F response_format=wav \
             --output artifacts/phase1_clone_english.wav
           echo "Generated phase1_clone_english.wav ($(stat --format=%s artifacts/phase1_clone_english.wav) bytes)"
 
       - name: "Phase 1: Clone Chinese voice from Vivian sample"
         run: |
-          base64 -w0 artifacts/phase1_vivian_chinese.wav | jq -Rs '{
-            model: "qwen3-tts",
-            input: "这段语音使用了Vivian的中文音频样本进行声音克隆。",
-            audio_sample: .,
-            audio_sample_text: "你好，这是Vivian的中文语音合成测试。",
-            language: "Chinese",
-            response_format: "wav"
-          }' > /tmp/payload.json
           curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
-            -H "Content-Type: application/json" \
-            -d @/tmp/payload.json \
+            -F model=qwen3-tts \
+            -F "input=这段语音使用了Vivian的中文音频样本进行声音克隆。" \
+            -F audio_sample=@artifacts/phase1_vivian_chinese.wav \
+            -F "audio_sample_text=你好，这是Vivian的中文语音合成测试。" \
+            -F language=Chinese \
+            -F response_format=wav \
             --output artifacts/phase1_clone_chinese.wav
           echo "Generated phase1_clone_chinese.wav ($(stat --format=%s artifacts/phase1_clone_chinese.wav) bytes)"
 
@@ -177,17 +169,13 @@ jobs:
 
       - name: "Phase 2: Verify audio_sample returns error"
         run: |
-          base64 -w0 artifacts/phase1_vivian_english.wav | jq -Rs '{
-            model: "qwen3-tts",
-            input: "This should fail.",
-            audio_sample: .,
-            language: "English",
-            response_format: "wav"
-          }' > /tmp/payload.json
           status=$(curl -s -o /tmp/response.json -w "%{http_code}" --max-time 30 \
             -X POST http://localhost:8000/v1/audio/speech \
-            -H "Content-Type: application/json" \
-            -d @/tmp/payload.json)
+            -F model=qwen3-tts \
+            -F "input=This should fail." \
+            -F audio_sample=@artifacts/phase1_vivian_english.wav \
+            -F language=English \
+            -F response_format=wav)
           echo "HTTP status: $status"
           cat /tmp/response.json
           echo
@@ -221,17 +209,13 @@ jobs:
 
       - name: "Phase 3: Clone voice from Ryan English sample"
         run: |
-          base64 -w0 artifacts/phase2_ryan_english.wav | jq -Rs '{
-            model: "qwen3-tts",
-            input: "This clones Ryan voice with only the Base model loaded.",
-            audio_sample: .,
-            audio_sample_text: "Hello, this is Ryan speaking English with only the CustomVoice model loaded.",
-            language: "English",
-            response_format: "wav"
-          }' > /tmp/payload.json
           curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
-            -H "Content-Type: application/json" \
-            -d @/tmp/payload.json \
+            -F model=qwen3-tts \
+            -F "input=This clones Ryan voice with only the Base model loaded." \
+            -F audio_sample=@artifacts/phase2_ryan_english.wav \
+            -F "audio_sample_text=Hello, this is Ryan speaking English with only the CustomVoice model loaded." \
+            -F language=English \
+            -F response_format=wav \
             --output artifacts/phase3_clone_ryan.wav
           echo "Generated phase3_clone_ryan.wav ($(stat --format=%s artifacts/phase3_clone_ryan.wav) bytes)"
 

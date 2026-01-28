@@ -12,7 +12,7 @@ from typing import AsyncGenerator
 import numpy as np
 import soundfile as sf
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from qwen_tts import Qwen3TTSModel
@@ -285,9 +285,69 @@ app = FastAPI(
 
 
 @app.post("/v1/audio/speech")
-async def create_speech(request: SpeechRequest) -> Response:
-    """Generate audio from text (OpenAI-compatible endpoint)."""
-    if request.audio_sample:
+async def create_speech(raw_request: Request) -> Response:
+    """Generate audio from text (OpenAI-compatible endpoint).
+
+    Accepts JSON or multipart/form-data.  Use multipart to upload
+    ``audio_sample`` as a binary file for voice cloning.
+    """
+    req_content_type = raw_request.headers.get("content-type", "")
+
+    if "multipart/form-data" in req_content_type:
+        form = await raw_request.form()
+
+        input_text = str(form.get("input", ""))
+        if not input_text:
+            raise HTTPException(
+                status_code=422, detail="'input' field is required"
+            )
+        if len(input_text) > 4096:
+            raise HTTPException(
+                status_code=422,
+                detail="'input' exceeds 4096 characters",
+            )
+
+        voice = str(form.get("voice", "alloy"))
+        try:
+            fmt = ResponseFormat(str(form.get("response_format", "mp3")))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail=str(exc)
+            ) from exc
+        speed = float(form.get("speed", "1.0"))
+        if not 0.25 <= speed <= 4.0:
+            raise HTTPException(
+                status_code=422,
+                detail="'speed' must be between 0.25 and 4.0",
+            )
+        language = str(form.get("language", "Auto"))
+        instr_val = form.get("instructions")
+        instructions = str(instr_val) if instr_val is not None else None
+        sample_text_val = form.get("audio_sample_text")
+        audio_sample_text = (
+            str(sample_text_val) if sample_text_val is not None else None
+        )
+
+        audio_upload = form.get("audio_sample")
+        ref_audio: tuple[np.ndarray, int] | str | None = None
+        if audio_upload is not None and hasattr(audio_upload, "read"):
+            audio_bytes = await audio_upload.read()
+            audio_arr, audio_sr = sf.read(io.BytesIO(audio_bytes))
+            ref_audio = (audio_arr.astype(np.float32), int(audio_sr))
+        elif audio_upload is not None:
+            ref_audio = str(audio_upload)
+    else:
+        request = SpeechRequest(**(await raw_request.json()))
+        input_text = request.input
+        voice = request.voice
+        fmt = request.response_format
+        speed = request.speed
+        language = request.language
+        instructions = request.instructions
+        audio_sample_text = request.audio_sample_text
+        ref_audio = request.audio_sample
+
+    if ref_audio is not None:
         base_model: Qwen3TTSModel | None = app.state.base_model
         if base_model is None:
             raise HTTPException(
@@ -297,13 +357,13 @@ async def create_speech(request: SpeechRequest) -> Response:
                     "Set BASE_MODEL_PATH to enable voice cloning."
                 ),
             )
-        use_icl = request.audio_sample_text is not None
+        use_icl = audio_sample_text is not None
         with _inference_lock:
             wavs, sr = base_model.generate_voice_clone(
-                text=request.input,
-                language=request.language,
-                ref_audio=request.audio_sample,
-                ref_text=request.audio_sample_text,
+                text=input_text,
+                language=language,
+                ref_audio=ref_audio,
+                ref_text=audio_sample_text,
                 x_vector_only_mode=not use_icl,
             )
     else:
@@ -317,21 +377,20 @@ async def create_speech(request: SpeechRequest) -> Response:
                     "or provide audio_sample to use voice cloning."
                 ),
             )
-        speaker = resolve_voice(request.voice)
-        instruct = request.instructions or ""
+        speaker = resolve_voice(voice)
+        instruct = instructions or ""
         with _inference_lock:
             wavs, sr = model.generate_custom_voice(
-                text=request.input,
-                language=request.language,
+                text=input_text,
+                language=language,
                 speaker=speaker,
                 instruct=instruct,
             )
 
     audio: np.ndarray = wavs[0]
-    audio = apply_speed(audio, request.speed)
-    data = encode_audio(audio, sr, request.response_format)
-    content_type = CONTENT_TYPES[request.response_format]
-    return Response(content=data, media_type=content_type)
+    audio = apply_speed(audio, speed)
+    data = encode_audio(audio, sr, fmt)
+    return Response(content=data, media_type=CONTENT_TYPES[fmt])
 
 
 @app.get("/v1/models")

@@ -85,10 +85,12 @@ Generate speech from text. Compatible with the [OpenAI audio speech API](https:/
 | `speed` | number | no | `1.0` | Playback speed, `0.25` to `4.0` | -- |
 | `language` | string | no | `Auto` | Language of the input text (`Auto`, `English`, `Chinese`, `Japanese`, `Korean`, `French`, `German`, `Spanish`, `Italian`, `Portuguese`, `Russian`) | -- |
 | `instructions` | string | no | -- | Style/emotion instruction passed to the model | CustomVoice |
-| `audio_sample` | string | no | -- | Base64-encoded reference audio for voice cloning | Base |
+| `audio_sample` | string/file | no | -- | Reference audio for voice cloning (file upload via multipart, or base64 string via JSON) | Base |
 | `audio_sample_text` | string | no | -- | Transcript of the reference audio; enables in-context learning mode for higher quality cloning | Base |
 
-> **Note:** When `audio_sample` is provided the request uses the **Base** model for voice cloning and `voice`/`instructions` are ignored. When `audio_sample` is omitted the request uses the **CustomVoice** model and requires a valid `voice`. If the required model is not loaded the server returns HTTP 400.
+> **Note:** The endpoint accepts both JSON and multipart/form-data. Use multipart (`curl -F`) to upload `audio_sample` as a binary file — this avoids base64 encoding. JSON requests can pass `audio_sample` as a base64-encoded string.
+>
+> When `audio_sample` is provided the request uses the **Base** model for voice cloning and `voice`/`instructions` are ignored. When `audio_sample` is omitted the request uses the **CustomVoice** model and requires a valid `voice`. If the required model is not loaded the server returns HTTP 400.
 
 **Response:** The raw audio bytes with the appropriate `Content-Type` header.
 
@@ -110,19 +112,13 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 **Example — voice cloning (Base model):**
 
 ```bash
-# Build JSON payload with base64-encoded reference audio
-base64 -w0 reference.wav | jq -Rs '{
-  model: "qwen3-tts",
-  input: "This sentence will be spoken in the cloned voice.",
-  audio_sample: .,
-  audio_sample_text: "Transcript of the reference audio.",
-  language: "English",
-  response_format: "wav"
-}' > /tmp/payload.json
-
 curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d @/tmp/payload.json \
+  -F model=qwen3-tts \
+  -F "input=This sentence will be spoken in the cloned voice." \
+  -F audio_sample=@reference.wav \
+  -F "audio_sample_text=Transcript of the reference audio." \
+  -F language=English \
+  -F response_format=wav \
   --output cloned.wav
 ```
 
