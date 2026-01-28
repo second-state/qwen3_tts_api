@@ -22,7 +22,7 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --project python
 
       - name: Cache models
         id: cache-models
@@ -37,9 +37,9 @@ jobs:
         if: steps.cache-models.outputs.cache-hit != 'true'
         run: |
           mkdir -p models
-          uv run huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          uv run --project python huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
             --local-dir ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice
-          uv run huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+          uv run --project python huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
             --local-dir ./models/Qwen3-TTS-12Hz-0.6B-Base
 
       - name: Create output directory
@@ -53,7 +53,7 @@ jobs:
         run: |
           CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
           BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
-          uv run python main.py &
+          uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
           for i in $(seq 1 120); do
@@ -133,7 +133,7 @@ jobs:
       - name: "Phase 2: Start server (CustomVoice only)"
         run: |
           CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-          uv run python main.py &
+          uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
           for i in $(seq 1 120); do
@@ -204,7 +204,7 @@ jobs:
       - name: "Phase 3: Start server (Base only)"
         run: |
           BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
-          uv run python main.py &
+          uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
           for i in $(seq 1 120); do
