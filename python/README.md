@@ -110,19 +110,19 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 **Example — voice cloning (Base model):**
 
 ```bash
-# Base64-encode the reference audio file
-AUDIO_B64=$(base64 -w0 reference.wav)
+# Build JSON payload with base64-encoded reference audio
+base64 -w0 reference.wav | jq -Rs '{
+  model: "qwen3-tts",
+  input: "This sentence will be spoken in the cloned voice.",
+  audio_sample: .,
+  audio_sample_text: "Transcript of the reference audio.",
+  language: "English",
+  response_format: "wav"
+}' > /tmp/payload.json
 
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-tts",
-    "input": "This sentence will be spoken in the cloned voice.",
-    "audio_sample": "'"$AUDIO_B64"'",
-    "audio_sample_text": "Transcript of the reference audio.",
-    "language": "English",
-    "response_format": "wav"
-  }' \
+  -d @/tmp/payload.json \
   --output cloned.wav
 ```
 
