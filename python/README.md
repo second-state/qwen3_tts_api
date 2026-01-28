@@ -9,25 +9,35 @@ A FastAPI server that wraps [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) beh
 - ffmpeg (required for mp3, opus, and aac output formats)
 - A CUDA GPU is strongly recommended; CPU inference works but is slow
 
-## Download a model
+## Download models
 
-Download model weights before starting the server. Pick the model that fits your hardware:
+Download model weights before starting the server. There are two model families:
 
-| Model | Parameters | Use case |
-|-------|-----------|----------|
-| `Qwen3-TTS-12Hz-0.6B-CustomVoice` | 0.6B | Lightweight, suitable for CPU |
-| `Qwen3-TTS-12Hz-1.7B-CustomVoice` | 1.7B | Higher quality, recommended for GPU |
+- **CustomVoice** — uses built-in speaker presets selected via the `voice` parameter.
+- **Base** — clones any voice from a reference audio sample via the `audio_sample` parameter.
+
+You can load one or both. At least one is required.
+
+| Model | Parameters | Type | Use case |
+|-------|-----------|------|----------|
+| `Qwen3-TTS-12Hz-0.6B-CustomVoice` | 0.6B | CustomVoice | Lightweight, suitable for CPU |
+| `Qwen3-TTS-12Hz-1.7B-CustomVoice` | 1.7B | CustomVoice | Higher quality, recommended for GPU |
+| `Qwen3-TTS-12Hz-0.6B-Base` | 0.6B | Base | Voice cloning, suitable for CPU |
 
 ```bash
 mkdir -p models
 
-# 0.6B (smaller)
+# CustomVoice — 0.6B (smaller)
 huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
   --local-dir ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice
 
-# 1.7B (higher quality)
+# CustomVoice — 1.7B (higher quality)
 huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --local-dir ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice
+
+# Base — 0.6B (voice cloning)
+huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --local-dir ./models/Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ## Quickstart with Docker
@@ -38,7 +48,10 @@ huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
 docker build -t qwen-tts-api .
 
 docker run -p 8000:8000 \
-  -v ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice:/model \
+  -v ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice:/customvoice-model \
+  -v ./models/Qwen3-TTS-12Hz-0.6B-Base:/base-model \
+  -e CUSTOMVOICE_MODEL_PATH=/customvoice-model \
+  -e BASE_MODEL_PATH=/base-model \
   qwen-tts-api
 ```
 
@@ -48,7 +61,10 @@ docker run -p 8000:8000 \
 docker build -f Dockerfile.cuda -t qwen-tts-api-cuda .
 
 docker run --gpus all -p 8000:8000 \
-  -v ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice:/model \
+  -v ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice:/customvoice-model \
+  -v ./models/Qwen3-TTS-12Hz-0.6B-Base:/base-model \
+  -e CUSTOMVOICE_MODEL_PATH=/customvoice-model \
+  -e BASE_MODEL_PATH=/base-model \
   qwen-tts-api-cuda
 ```
 
@@ -60,19 +76,25 @@ Generate speech from text. Compatible with the [OpenAI audio speech API](https:/
 
 **Request body (JSON):**
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | string | yes | -- | Model identifier (accepted for compatibility; the loaded model is always used) |
-| `input` | string | yes | -- | Text to synthesize (max 4096 characters) |
-| `voice` | string | yes | -- | Voice name (see table below) |
-| `response_format` | string | no | `mp3` | `mp3`, `opus`, `aac`, `flac`, `wav`, or `pcm` |
-| `speed` | number | no | `1.0` | Playback speed, `0.25` to `4.0` |
-| `language` | string | no | `Auto` | Language of the input text (`Auto`, `English`, `Chinese`, `Japanese`, `Korean`, `French`, `German`, `Spanish`, `Italian`, `Portuguese`, `Russian`) |
-| `instructions` | string | no | -- | Style/emotion instruction passed to the model |
+| Field | Type | Required | Default | Description | Requires model |
+|-------|------|----------|---------|-------------|----------------|
+| `model` | string | yes | -- | Model identifier (accepted for compatibility; the loaded model is always used) | -- |
+| `input` | string | yes | -- | Text to synthesize (max 4096 characters) | -- |
+| `voice` | string | no | `alloy` | Voice name (see table below) | CustomVoice |
+| `response_format` | string | no | `mp3` | `mp3`, `opus`, `aac`, `flac`, `wav`, or `pcm` | -- |
+| `speed` | number | no | `1.0` | Playback speed, `0.25` to `4.0` | -- |
+| `language` | string | no | `Auto` | Language of the input text (`Auto`, `English`, `Chinese`, `Japanese`, `Korean`, `French`, `German`, `Spanish`, `Italian`, `Portuguese`, `Russian`) | -- |
+| `instructions` | string | no | -- | Style/emotion instruction passed to the model | CustomVoice |
+| `audio_sample` | string/file | no | -- | Reference audio for voice cloning (file upload via multipart, or base64 string via JSON) | Base |
+| `audio_sample_text` | string | no | -- | Transcript of the reference audio; enables in-context learning mode for higher quality cloning | Base |
+
+> **Note:** The endpoint accepts both JSON and multipart/form-data. Use multipart (`curl -F`) to upload `audio_sample` as a binary file — this avoids base64 encoding. JSON requests can pass `audio_sample` as a base64-encoded string.
+>
+> When `audio_sample` is provided the request uses the **Base** model for voice cloning and `voice`/`instructions` are ignored. When `audio_sample` is omitted the request uses the **CustomVoice** model and requires a valid `voice`. If the required model is not loaded the server returns HTTP 400.
 
 **Response:** The raw audio bytes with the appropriate `Content-Type` header.
 
-**Example:**
+**Example — predefined voice (CustomVoice model):**
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -85,6 +107,19 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     "response_format": "wav"
   }' \
   --output speech.wav
+```
+
+**Example — voice cloning (Base model):**
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -F model=qwen3-tts \
+  -F "input=This sentence will be spoken in the cloned voice." \
+  -F audio_sample=@reference.wav \
+  -F "audio_sample_text=Transcript of the reference audio." \
+  -F language=English \
+  -F response_format=wav \
+  --output cloned.wav
 ```
 
 ### `GET /v1/models`
@@ -131,6 +166,35 @@ The `voice` field accepts OpenAI voice names (mapped to Qwen3-TTS speakers) or Q
 | `aac` | `audio/aac` | Yes |
 
 
+## Preparing reference audio
+
+The `audio_sample` parameter accepts a path to a WAV file. If your source audio is in another format (mp3, m4a, ogg, etc.), convert it with ffmpeg first:
+
+```bash
+ffmpeg -i input.m4a -ac 1 -ar 24000 -sample_fmt s16 reference.wav
+```
+
+| Flag | Meaning |
+|------|---------|
+| `-ac 1` | Mix down to mono |
+| `-ar 24000` | Resample to 24 kHz (expected by the speaker encoder) |
+| `-sample_fmt s16` | 16-bit signed PCM |
+
+This works for any input format ffmpeg supports. A few common examples:
+
+```bash
+# MP3
+ffmpeg -i recording.mp3 -ac 1 -ar 24000 -sample_fmt s16 reference.wav
+
+# OGG / Opus
+ffmpeg -i recording.ogg -ac 1 -ar 24000 -sample_fmt s16 reference.wav
+
+# FLAC
+ffmpeg -i recording.flac -ac 1 -ar 24000 -sample_fmt s16 reference.wav
+```
+
+A short clip (3–10 seconds) of clear speech with minimal background noise gives the best cloning results.
+
 ## Running from source
 
 ### Install dependencies
@@ -147,17 +211,21 @@ pip install -U flash-attn --no-build-isolation
 
 ### Start the server
 
+At least one of `CUSTOMVOICE_MODEL_PATH` or `BASE_MODEL_PATH` must be set. Both can be loaded at the same time.
+
 **GPU (CUDA):**
 
 ```bash
-MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
   uv run python main.py
 ```
 
 **CPU:**
 
 ```bash
-MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
   QWEN_TTS_DEVICE=cpu \
   QWEN_TTS_DTYPE=float32 \
   QWEN_TTS_ATTN="" \
@@ -170,7 +238,8 @@ The server listens on `http://0.0.0.0:8000` by default.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL_PATH` | `/model` | Path to the model directory (local path or HuggingFace model ID) |
+| `CUSTOMVOICE_MODEL_PATH` | -- | Path to a CustomVoice model directory (enables `voice`/`instructions` parameters) |
+| `BASE_MODEL_PATH` | -- | Path to a Base model directory (enables `audio_sample` voice cloning) |
 | `QWEN_TTS_DEVICE` | `cuda:0` | Torch device (`cuda:0`, `cuda:1`, `cpu`) |
 | `QWEN_TTS_DTYPE` | `bfloat16` | Model precision (`bfloat16`, `float16`, `float32`) |
 | `QWEN_TTS_ATTN` | `flash_attention_2` | Attention implementation (set to empty string `""` to disable) |
