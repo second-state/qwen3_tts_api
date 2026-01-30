@@ -7,7 +7,7 @@ on:
 jobs:
   test-api:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       QWEN_TTS_DEVICE: cpu
@@ -21,6 +21,9 @@ jobs:
         with:
           version: "latest"
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Install dependencies
         run: uv sync --project python
 
@@ -31,7 +34,8 @@ jobs:
           path: |
             models/Qwen3-TTS-12Hz-0.6B-CustomVoice
             models/Qwen3-TTS-12Hz-0.6B-Base
-          key: qwen-tts-models-0.6B
+            models/Qwen3-ASR-0.6B
+          key: qwen-audio-models-0.6B-v2
 
       - name: Download models
         if: steps.cache-models.outputs.cache-hit != 'true'
@@ -41,18 +45,20 @@ jobs:
             --local-dir ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice
           uv run --project python huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
             --local-dir ./models/Qwen3-TTS-12Hz-0.6B-Base
+          uv run --project python huggingface-cli download Qwen/Qwen3-ASR-0.6B \
+            --local-dir ./models/Qwen3-ASR-0.6B
 
       - name: Create output directory
         run: mkdir -p artifacts
 
       # ==================================================================
-      # Phase 1: Both models loaded
+      # Phase 1: Both TTS models loaded
       # ==================================================================
 
-      - name: "Phase 1: Start server (both models)"
+      - name: "Phase 1: Start server (both TTS models)"
         run: |
-          CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-          BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+          TTS_CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          TTS_BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
           uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
@@ -126,7 +132,7 @@ jobs:
 
       - name: "Phase 2: Start server (CustomVoice only)"
         run: |
-          CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          TTS_CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
           uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
@@ -194,7 +200,7 @@ jobs:
 
       - name: "Phase 3: Start server (Base only)"
         run: |
-          BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+          TTS_BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
           uv run --project python python python/main.py &
           echo $! > /tmp/server.pid
           echo "Waiting for server..."
@@ -244,6 +250,166 @@ jobs:
         run: kill "$(cat /tmp/server.pid)" && sleep 2
 
       # ==================================================================
+      # Phase 4: ASR model only
+      # ==================================================================
+
+      - name: "Phase 4: Start server (ASR only)"
+        run: |
+          ASR_MODEL_PATH=./models/Qwen3-ASR-0.6B \
+          uv run --project python python python/main.py &
+          echo $! > /tmp/server.pid
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: "Phase 4: Transcribe English audio"
+        run: |
+          result=$(curl -sf --max-time 300 -X POST http://localhost:8000/v1/audio/transcriptions \
+            -F file=@artifacts/phase1_vivian_english.wav \
+            -F model=qwen3-asr \
+            -F language=English)
+          echo "Transcription result: $result"
+          echo "$result" > artifacts/phase4_transcribe_english.txt
+          # Verify we got a text response
+          echo "$result" | python3 -c "import sys, json; d = json.load(sys.stdin); assert 'text' in d and len(d['text']) > 0, 'No text in response'"
+          echo "PASS: English transcription successful"
+
+      - name: "Phase 4: Transcribe Chinese audio"
+        run: |
+          result=$(curl -sf --max-time 300 -X POST http://localhost:8000/v1/audio/transcriptions \
+            -F file=@artifacts/phase1_vivian_chinese.wav \
+            -F model=qwen3-asr \
+            -F language=Chinese)
+          echo "Transcription result: $result"
+          echo "$result" > artifacts/phase4_transcribe_chinese.txt
+          # Verify we got a text response
+          echo "$result" | python3 -c "import sys, json; d = json.load(sys.stdin); assert 'text' in d and len(d['text']) > 0, 'No text in response'"
+          echo "PASS: Chinese transcription successful"
+
+      - name: "Phase 4: Verify TTS returns error"
+        run: |
+          status=$(curl -s -o /tmp/response.json -w "%{http_code}" --max-time 30 \
+            -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-tts",
+              "input": "This should fail.",
+              "voice": "Vivian",
+              "language": "English",
+              "response_format": "wav"
+            }')
+          echo "HTTP status: $status"
+          cat /tmp/response.json
+          echo
+          if [ "$status" -ne 400 ]; then
+            echo "FAIL: Expected HTTP 400 but got $status"
+            exit 1
+          fi
+          echo "PASS: TTS correctly rejected without TTS model"
+
+      - name: "Phase 4: Stop server"
+        run: kill "$(cat /tmp/server.pid)" && sleep 2
+
+      # ==================================================================
+      # Phase 5: TTS + ASR Round-Trip Test
+      # ==================================================================
+
+      - name: "Phase 5: Start server (TTS + ASR)"
+        run: |
+          TTS_CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+          ASR_MODEL_PATH=./models/Qwen3-ASR-0.6B \
+          uv run --project python python python/main.py &
+          echo $! > /tmp/server.pid
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: "Phase 5: TTS->ASR Round-Trip (English)"
+        run: |
+          INPUT_TEXT="Hello, this is a test of the Qwen text to speech system."
+
+          # Generate speech
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"qwen3-tts\",
+              \"input\": \"$INPUT_TEXT\",
+              \"voice\": \"Vivian\",
+              \"language\": \"English\",
+              \"response_format\": \"wav\"
+            }" \
+            --output artifacts/phase5_tts_english.wav
+          echo "Generated phase5_tts_english.wav ($(stat --format=%s artifacts/phase5_tts_english.wav) bytes)"
+
+          # Transcribe
+          result=$(curl -sf --max-time 300 -X POST http://localhost:8000/v1/audio/transcriptions \
+            -F file=@artifacts/phase5_tts_english.wav \
+            -F model=qwen3-asr \
+            -F language=English)
+
+          OUTPUT_TEXT=$(echo "$result" | python3 -c "import sys, json; print(json.load(sys.stdin)['text'])")
+
+          echo "=========================================="
+          echo "ENGLISH ROUND-TRIP TEST"
+          echo "=========================================="
+          echo "Input text:  $INPUT_TEXT"
+          echo "Output text: $OUTPUT_TEXT"
+          echo "==========================================" | tee artifacts/phase5_roundtrip_english.txt
+
+          # The texts should be similar (not exact due to ASR limitations)
+          echo "PASS: English round-trip completed"
+
+      - name: "Phase 5: TTS->ASR Round-Trip (Chinese)"
+        run: |
+          INPUT_TEXT="你好，这是一个语音合成和语音识别的测试。"
+
+          # Generate speech
+          curl -sf --max-time 600 -X POST http://localhost:8000/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"qwen3-tts\",
+              \"input\": \"$INPUT_TEXT\",
+              \"voice\": \"Vivian\",
+              \"language\": \"Chinese\",
+              \"response_format\": \"wav\"
+            }" \
+            --output artifacts/phase5_tts_chinese.wav
+          echo "Generated phase5_tts_chinese.wav ($(stat --format=%s artifacts/phase5_tts_chinese.wav) bytes)"
+
+          # Transcribe
+          result=$(curl -sf --max-time 300 -X POST http://localhost:8000/v1/audio/transcriptions \
+            -F file=@artifacts/phase5_tts_chinese.wav \
+            -F model=qwen3-asr \
+            -F language=Chinese)
+
+          OUTPUT_TEXT=$(echo "$result" | python3 -c "import sys, json; print(json.load(sys.stdin)['text'])")
+
+          echo "=========================================="
+          echo "CHINESE ROUND-TRIP TEST"
+          echo "=========================================="
+          echo "Input text:  $INPUT_TEXT"
+          echo "Output text: $OUTPUT_TEXT"
+          echo "==========================================" | tee artifacts/phase5_roundtrip_chinese.txt
+
+          # The texts should be similar (not exact due to ASR limitations)
+          echo "PASS: Chinese round-trip completed"
+
+      - name: "Phase 5: Stop server"
+        run: kill "$(cat /tmp/server.pid)" && sleep 2
+
+      # ==================================================================
       # Upload artifacts
       # ==================================================================
 
@@ -253,3 +419,10 @@ jobs:
         with:
           name: generated-audio
           path: artifacts/*.wav
+
+      - name: Upload transcription artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriptions
+          path: artifacts/*.txt

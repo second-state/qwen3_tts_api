@@ -1,28 +1,37 @@
-# Qwen3-TTS OpenAI-Compatible API
+# Qwen3-TTS/ASR OpenAI-Compatible API
 
-A FastAPI server that wraps [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) behind an OpenAI-compatible `/v1/audio/speech` endpoint. Any client that speaks the OpenAI TTS API can point at this server and get speech from Qwen3-TTS instead.
+A FastAPI server that wraps [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) and [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) behind OpenAI-compatible endpoints. Any client that speaks the OpenAI audio API can point at this server and get text-to-speech and speech-to-text from Qwen3 models.
 
 ## Prerequisites
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
-- ffmpeg (required for mp3, opus, and aac output formats)
+- ffmpeg (required for audio format conversion)
 - A CUDA GPU is strongly recommended; CPU inference works but is slow
 
 ## Download models
 
-Download model weights before starting the server. There are two model families:
+Download model weights before starting the server.
+
+### TTS Models
+
+There are two TTS model families:
 
 - **CustomVoice** — uses built-in speaker presets selected via the `voice` parameter.
 - **Base** — clones any voice from a reference audio sample via the `audio_sample` parameter.
-
-You can load one or both. At least one is required.
 
 | Model | Parameters | Type | Use case |
 |-------|-----------|------|----------|
 | `Qwen3-TTS-12Hz-0.6B-CustomVoice` | 0.6B | CustomVoice | Lightweight, suitable for CPU |
 | `Qwen3-TTS-12Hz-1.7B-CustomVoice` | 1.7B | CustomVoice | Higher quality, recommended for GPU |
 | `Qwen3-TTS-12Hz-0.6B-Base` | 0.6B | Base | Voice cloning, suitable for CPU |
+
+### ASR Models
+
+| Model | Parameters | Use case |
+|-------|-----------|----------|
+| `Qwen3-ASR-0.6B` | 0.6B | Lightweight, suitable for CPU |
+| `Qwen3-ASR-1.7B` | 1.7B | Higher accuracy, recommended for GPU |
 
 ```bash
 mkdir -p models
@@ -38,34 +47,66 @@ huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
 # Base — 0.6B (voice cloning)
 huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --local-dir ./models/Qwen3-TTS-12Hz-0.6B-Base
+
+# ASR — 0.6B (smaller)
+huggingface-cli download Qwen/Qwen3-ASR-0.6B \
+  --local-dir ./models/Qwen3-ASR-0.6B
+
+# ASR — 1.7B (higher accuracy)
+huggingface-cli download Qwen/Qwen3-ASR-1.7B \
+  --local-dir ./models/Qwen3-ASR-1.7B
 ```
 
 ## Quickstart with Docker
 
-**CPU:**
+> **Note:** You don't need all models — load only what you need. At least one of `TTS_CUSTOMVOICE_MODEL_PATH`, `TTS_BASE_MODEL_PATH`, or `ASR_MODEL_PATH` must be set.
+
+**CPU (all models):**
 
 ```bash
-docker build -t qwen-tts-api .
+docker build -t qwen3-audio-api .
 
 docker run -p 8000:8000 \
   -v ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice:/customvoice-model \
   -v ./models/Qwen3-TTS-12Hz-0.6B-Base:/base-model \
-  -e CUSTOMVOICE_MODEL_PATH=/customvoice-model \
-  -e BASE_MODEL_PATH=/base-model \
-  qwen-tts-api
+  -v ./models/Qwen3-ASR-0.6B:/asr-model \
+  -e TTS_CUSTOMVOICE_MODEL_PATH=/customvoice-model \
+  -e TTS_BASE_MODEL_PATH=/base-model \
+  -e ASR_MODEL_PATH=/asr-model \
+  qwen3-audio-api
 ```
 
-**CUDA GPU:**
+**CPU (ASR only):**
 
 ```bash
-docker build -f Dockerfile.cuda -t qwen-tts-api-cuda .
+docker run -p 8000:8000 \
+  -v ./models/Qwen3-ASR-0.6B:/asr-model \
+  -e ASR_MODEL_PATH=/asr-model \
+  qwen3-audio-api
+```
+
+**CPU (TTS only):**
+
+```bash
+docker run -p 8000:8000 \
+  -v ./models/Qwen3-TTS-12Hz-0.6B-CustomVoice:/customvoice-model \
+  -e TTS_CUSTOMVOICE_MODEL_PATH=/customvoice-model \
+  qwen3-audio-api
+```
+
+**CUDA GPU (all models):**
+
+```bash
+docker build -f Dockerfile.cuda -t qwen3-audio-api-cuda .
 
 docker run --gpus all -p 8000:8000 \
   -v ./models/Qwen3-TTS-12Hz-1.7B-CustomVoice:/customvoice-model \
   -v ./models/Qwen3-TTS-12Hz-0.6B-Base:/base-model \
-  -e CUSTOMVOICE_MODEL_PATH=/customvoice-model \
-  -e BASE_MODEL_PATH=/base-model \
-  qwen-tts-api-cuda
+  -v ./models/Qwen3-ASR-1.7B:/asr-model \
+  -e TTS_CUSTOMVOICE_MODEL_PATH=/customvoice-model \
+  -e TTS_BASE_MODEL_PATH=/base-model \
+  -e ASR_MODEL_PATH=/asr-model \
+  qwen3-audio-api-cuda
 ```
 
 ## API reference
@@ -121,6 +162,59 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   -F response_format=wav \
   --output cloned.wav
 ```
+
+### `POST /v1/audio/transcriptions`
+
+Transcribe audio to text. Compatible with the [OpenAI audio transcriptions API](https://platform.openai.com/docs/api-reference/audio/createTranscription).
+
+**Request body (multipart/form-data):**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `file` | file | yes | -- | The audio file to transcribe (mp3, mp4, mpeg, mpga, m4a, wav, webm) |
+| `model` | string | no | `qwen3-asr` | Model identifier (accepted for compatibility; the loaded model is always used) |
+| `language` | string | no | -- | Language of the audio (auto-detected if not specified). Supports 30+ languages including English, Chinese, Japanese, Korean, French, German, Spanish, etc. |
+| `prompt` | string | no | -- | Optional context hint (not currently used) |
+| `response_format` | string | no | `json` | `json` or `text` |
+| `temperature` | number | no | `0.0` | Sampling temperature (not currently used) |
+
+> **Note:** WAV files are processed directly. Other formats (mp3, m4a, etc.) are automatically converted to WAV using ffmpeg before transcription.
+
+**Response (JSON):**
+
+```json
+{
+  "text": "The transcribed text content."
+}
+```
+
+**Response (text):**
+
+```
+The transcribed text content.
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F file=@audio.mp3 \
+  -F model=qwen3-asr
+```
+
+**Example with language hint:**
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F file=@audio.mp3 \
+  -F model=qwen3-asr \
+  -F language=English \
+  -F response_format=text
+```
+
+**Supported languages for ASR:**
+
+The Qwen3-ASR model supports 30+ languages including: English, Chinese (Mandarin and dialects), Japanese, Korean, French, German, Spanish, Italian, Portuguese, Russian, Arabic, Dutch, Polish, Turkish, Vietnamese, Thai, Indonesian, Hindi, and more. When `language` is not specified, the model auto-detects the language.
 
 ### `GET /v1/models`
 
@@ -211,21 +305,23 @@ pip install -U flash-attn --no-build-isolation
 
 ### Start the server
 
-At least one of `CUSTOMVOICE_MODEL_PATH` or `BASE_MODEL_PATH` must be set. Both can be loaded at the same time.
+At least one of `TTS_CUSTOMVOICE_MODEL_PATH`, `TTS_BASE_MODEL_PATH`, or `ASR_MODEL_PATH` must be set. All can be loaded at the same time.
 
 **GPU (CUDA):**
 
 ```bash
-CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
-  BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+TTS_CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  TTS_BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+  ASR_MODEL_PATH=./models/Qwen3-ASR-1.7B \
   uv run python main.py
 ```
 
 **CPU:**
 
 ```bash
-CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-  BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+TTS_CUSTOMVOICE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  TTS_BASE_MODEL_PATH=./models/Qwen3-TTS-12Hz-0.6B-Base \
+  ASR_MODEL_PATH=./models/Qwen3-ASR-0.6B \
   QWEN_TTS_DEVICE=cpu \
   QWEN_TTS_DTYPE=float32 \
   QWEN_TTS_ATTN="" \
@@ -238,8 +334,9 @@ The server listens on `http://0.0.0.0:8000` by default.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CUSTOMVOICE_MODEL_PATH` | -- | Path to a CustomVoice model directory (enables `voice`/`instructions` parameters) |
-| `BASE_MODEL_PATH` | -- | Path to a Base model directory (enables `audio_sample` voice cloning) |
+| `TTS_CUSTOMVOICE_MODEL_PATH` | -- | Path to a CustomVoice model directory (enables `voice`/`instructions` parameters) |
+| `TTS_BASE_MODEL_PATH` | -- | Path to a Base model directory (enables `audio_sample` voice cloning) |
+| `ASR_MODEL_PATH` | -- | Path to an ASR model directory (enables `/v1/audio/transcriptions` endpoint) |
 | `QWEN_TTS_DEVICE` | `cuda:0` | Torch device (`cuda:0`, `cuda:1`, `cpu`) |
 | `QWEN_TTS_DTYPE` | `bfloat16` | Model precision (`bfloat16`, `float16`, `float32`) |
 | `QWEN_TTS_ATTN` | `flash_attention_2` | Attention implementation (set to empty string `""` to disable) |
