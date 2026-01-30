@@ -431,7 +431,10 @@ def convert_audio_to_wav(audio_bytes: bytes, suffix: str = ".mp3") -> str:
         src_file.write(audio_bytes)
         src_path = src_file.name
 
-    wav_path = src_path.rsplit(".", 1)[0] + ".wav"
+    # Create a separate temporary file path for the WAV output to avoid
+    # relying on string-based suffix parsing of src_path.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+        wav_path = wav_file.name
 
     result = subprocess.run(
         [
