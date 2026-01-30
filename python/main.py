@@ -1,9 +1,10 @@
-"""FastAPI server implementing the OpenAI /v1/audio/speech API with Qwen3-TTS."""
+"""FastAPI server implementing OpenAI-compatible audio APIs with Qwen3-TTS/ASR."""
 
 import io
 import logging
 import os
 import subprocess
+import tempfile
 import threading
 from contextlib import asynccontextmanager
 from enum import Enum
@@ -12,9 +13,10 @@ from typing import AsyncGenerator
 import numpy as np
 import soundfile as sf
 import torch
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from qwen_asr import Qwen3ASRModel
 from qwen_tts import Qwen3TTSModel
 
 logger = logging.getLogger(__name__)
@@ -215,18 +217,19 @@ _inference_lock = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Load the Qwen3-TTS models on startup."""
-    model_path = os.environ.get("CUSTOMVOICE_MODEL_PATH", "")
-    base_model_path = os.environ.get("BASE_MODEL_PATH", "")
+    """Load the Qwen3-TTS and Qwen3-ASR models on startup."""
+    model_path = os.environ.get("TTS_CUSTOMVOICE_MODEL_PATH", "")
+    base_model_path = os.environ.get("TTS_BASE_MODEL_PATH", "")
+    asr_model_path = os.environ.get("ASR_MODEL_PATH", "")
     device = os.environ.get("QWEN_TTS_DEVICE", "cuda:0")
     dtype_name = os.environ.get("QWEN_TTS_DTYPE", "bfloat16")
     dtype = getattr(torch, dtype_name, torch.bfloat16)
     attn_impl = os.environ.get("QWEN_TTS_ATTN", "flash_attention_2")
 
-    if not model_path and not base_model_path:
+    if not model_path and not base_model_path and not asr_model_path:
         raise RuntimeError(
-            "At least one of CUSTOMVOICE_MODEL_PATH or "
-            "BASE_MODEL_PATH must be set."
+            "At least one of TTS_CUSTOMVOICE_MODEL_PATH, TTS_BASE_MODEL_PATH, "
+            "or ASR_MODEL_PATH must be set."
         )
 
     if attn_impl == "flash_attention_2":
@@ -255,9 +258,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             dtype_name,
             attn_impl,
         )
-        app.state.model = Qwen3TTSModel.from_pretrained(
-            model_path, **kwargs
-        )
+        app.state.model = Qwen3TTSModel.from_pretrained(model_path, **kwargs)
         logger.info("Custom-voice model loaded successfully")
 
     app.state.base_model = None
@@ -269,10 +270,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             dtype_name,
             attn_impl,
         )
-        app.state.base_model = Qwen3TTSModel.from_pretrained(
-            base_model_path, **kwargs
-        )
+        app.state.base_model = Qwen3TTSModel.from_pretrained(base_model_path, **kwargs)
         logger.info("Base model loaded successfully")
+
+    app.state.asr_model = None
+    if asr_model_path:
+        logger.info(
+            "Loading ASR model %s on %s (%s, attn=%s)",
+            asr_model_path,
+            device,
+            dtype_name,
+            attn_impl,
+        )
+        asr_kwargs: dict[str, object] = {
+            "device_map": device,
+            "dtype": dtype,
+            "max_inference_batch_size": 1,
+            "max_new_tokens": 512,
+        }
+        if attn_impl:
+            asr_kwargs["attn_implementation"] = attn_impl
+        app.state.asr_model = Qwen3ASRModel.from_pretrained(
+            asr_model_path, **asr_kwargs
+        )
+        logger.info("ASR model loaded successfully")
 
     yield
 
@@ -298,9 +319,7 @@ async def create_speech(raw_request: Request) -> Response:
 
         input_text = str(form.get("input", ""))
         if not input_text:
-            raise HTTPException(
-                status_code=422, detail="'input' field is required"
-            )
+            raise HTTPException(status_code=422, detail="'input' field is required")
         if len(input_text) > 4096:
             raise HTTPException(
                 status_code=422,
@@ -311,9 +330,7 @@ async def create_speech(raw_request: Request) -> Response:
         try:
             fmt = ResponseFormat(str(form.get("response_format", "mp3")))
         except ValueError as exc:
-            raise HTTPException(
-                status_code=422, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         speed = float(form.get("speed", "1.0"))
         if not 0.25 <= speed <= 4.0:
             raise HTTPException(
@@ -354,7 +371,7 @@ async def create_speech(raw_request: Request) -> Response:
                 status_code=400,
                 detail=(
                     "audio_sample requires a base model. "
-                    "Set BASE_MODEL_PATH to enable voice cloning."
+                    "Set TTS_BASE_MODEL_PATH to enable voice cloning."
                 ),
             )
         use_icl = audio_sample_text is not None
@@ -373,7 +390,7 @@ async def create_speech(raw_request: Request) -> Response:
                 status_code=400,
                 detail=(
                     "Custom-voice model is not loaded. "
-                    "Set CUSTOMVOICE_MODEL_PATH to enable speaker voices, "
+                    "Set TTS_CUSTOMVOICE_MODEL_PATH to enable speaker voices, "
                     "or provide audio_sample to use voice cloning."
                 ),
             )
@@ -393,18 +410,151 @@ async def create_speech(raw_request: Request) -> Response:
     return Response(content=data, media_type=CONTENT_TYPES[fmt])
 
 
+# ---------------------------------------------------------------------------
+# Audio transcription helpers
+# ---------------------------------------------------------------------------
+
+
+def convert_audio_to_wav(audio_bytes: bytes, suffix: str = ".mp3") -> str:
+    """Convert audio bytes to WAV format using ffmpeg.
+
+    Returns the path to a temporary WAV file that the caller is responsible
+    for cleaning up. If the input is already WAV format, saves it directly.
+    """
+    # If already WAV, save directly without conversion
+    if suffix.lower() == ".wav":
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+            wav_file.write(audio_bytes)
+            return wav_file.name
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as src_file:
+        src_file.write(audio_bytes)
+        src_path = src_file.name
+
+    # Create a separate temporary file path for the WAV output to avoid
+    # relying on string-based suffix parsing of src_path.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+        wav_path = wav_file.name
+
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            src_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-sample_fmt",
+            "s16",
+            wav_path,
+        ],
+        capture_output=True,
+    )
+
+    os.unlink(src_path)
+
+    if result.returncode != 0:
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
+        stderr = result.stderr.decode(errors="replace")
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg audio conversion failed: {stderr}",
+        )
+
+    return wav_path
+
+
+# ---------------------------------------------------------------------------
+# Transcription endpoint
+# ---------------------------------------------------------------------------
+
+
+class TranscriptionResponse(BaseModel):
+    """Response for the transcription endpoint."""
+
+    text: str
+
+
+@app.post("/v1/audio/transcriptions", response_model=None)
+async def create_transcription(
+    file: UploadFile = File(...),
+    model: str = Form(default="qwen3-asr"),
+    language: str | None = Form(default=None),
+    prompt: str | None = Form(default=None),
+    response_format: str = Form(default="json"),
+    temperature: float = Form(default=0.0),
+) -> TranscriptionResponse | Response:
+    """Transcribe audio to text (OpenAI-compatible endpoint).
+
+    Accepts multipart/form-data with an audio file.
+    """
+    asr_model: Qwen3ASRModel | None = app.state.asr_model
+    if asr_model is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "ASR model is not loaded. Set ASR_MODEL_PATH to enable transcription."
+            ),
+        )
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=422, detail="Empty audio file")
+
+    filename = file.filename or "audio.mp3"
+    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ".mp3"
+
+    wav_path: str | None = None
+    try:
+        wav_path = convert_audio_to_wav(audio_bytes, suffix=suffix)
+
+        with _inference_lock:
+            results = asr_model.transcribe(
+                audio=wav_path,
+                language=language,
+            )
+
+        text = results[0].text if results else ""
+
+        if response_format == "text":
+            return Response(content=text, media_type="text/plain")
+
+        return TranscriptionResponse(text=text)
+
+    finally:
+        if wav_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
+
+
 @app.get("/v1/models")
 async def list_models() -> dict[str, object]:
     """List available models (minimal OpenAI-compatible response)."""
-    return {
-        "object": "list",
-        "data": [
+    models = []
+    if app.state.model is not None or app.state.base_model is not None:
+        models.append(
             {
                 "id": "qwen3-tts",
                 "object": "model",
                 "owned_by": "qwen",
             }
-        ],
+        )
+    if app.state.asr_model is not None:
+        models.append(
+            {
+                "id": "qwen3-asr",
+                "object": "model",
+                "owned_by": "qwen",
+            }
+        )
+    return {
+        "object": "list",
+        "data": models,
     }
 
 

@@ -19,8 +19,9 @@ ENV QWEN_TTS_DEVICE=cpu \
     QWEN_TTS_DTYPE=float32 \
     QWEN_TTS_ATTN="" \
     HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8000 \
+    PYTHONWARNINGS="ignore::SyntaxWarning"
 
 EXPOSE 8000
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["/app/.venv/bin/python", "main.py"]

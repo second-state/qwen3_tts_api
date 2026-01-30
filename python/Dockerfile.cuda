@@ -37,8 +37,9 @@ ENV QWEN_TTS_DEVICE=cuda:0 \
     HOST=0.0.0.0 \
     PORT=8000 \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    PYTHONWARNINGS="ignore::SyntaxWarning"
 
 EXPOSE 8000
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["/app/.venv/bin/python", "main.py"]
